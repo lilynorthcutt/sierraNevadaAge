@@ -1,0 +1,9 @@
+File Description:
+
+(1) DetailedMapDataAreaBoundaryLine - this is a line shapefile with the boundary of the area of detailed mapping
+
+(2) CretaceousIntrusionsIndividualPolygons - this a polygon shapefile with each polygon representing an individual mapped unit of Cretaceous intrusions from the detailed data, this contains additional information especially focusing on which intrusive suite each polygon corresponds to
+
+(3) CretaceousIntrusionsExtentPolygons - this is a polygon shapefile with polygons that simply shows the extent of mapped Cretaceous intrusions from the detailed data, this was created by uniting all the individual polygons (i.e. shapefile #2) into as few polygons as possible such that any area of contiguous mapped Cretaceous intrusions becomes a single polygon
+
+(4) IntrusiveSuitePolygons - this is a polygon shapefile with polygons that show the mapped extent of each intrusive suite (as well as unassigned rocks), this was created by dissolving all the individual polygons (i.e. shapefile #2) by the IntSuite field such that any area of contiguous mapped Cretacoues intrusions that belong to the same intrusive suite becomes a single polygon
