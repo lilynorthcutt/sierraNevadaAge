@@ -1,6 +1,22 @@
-library(shiny)
+# modules/map_module.R
 
-function(input, output, session){
+# ----------- UI ----------- #
+mapModuleUI <- function(id){
+  ns <- NS(id)
+  # ---------- MAP ----------- #
+  tagList(
+    leafletOutput(ns("map")),
+    sliderInput(ns("age_slider"), "", min = min(df_point_csv$Age), 
+                max = max(df_point_csv$Age), 
+                value = min(df_point_csv$Age),
+                step = 1, 
+                animate = animationOptions(interval = 1000, loop = FALSE) )
+  )
+}
+
+# ----------- Server Funcs ----------- #
+mapModule <- function(input, output, session, border_poly, all_polygons, df_point_csv){
+  ns <- session$ns
   
   output$map <- renderLeaflet({
     ### LEAFLET PLOT
@@ -47,13 +63,14 @@ function(input, output, session){
     
   })
   
+
+
   observeEvent(input$age_slider, {
     # Filter markers to greater than or equal to age on slider
     selected_age <- input$age_slider
     filtered_points <- df_point_csv %>% filter(Age >= selected_age)
-    
-    leafletProxy("map") %>%
-      clearMarkers() %>% 
+
+    leafletProxy("map", session) %>%
       addCircleMarkers(data = filtered_points, lat = ~ lat, lng = ~ long,
                        radius = 5,
                        color = ~ pal(Age),
@@ -62,8 +79,8 @@ function(input, output, session){
                        popup = ~ paste0("Age: ", as.character(Age), " Ma" ),
                        fillOpacity = 1,
                        group = "ages")
-    
-    
+
+
   })
   
-}
+  }
