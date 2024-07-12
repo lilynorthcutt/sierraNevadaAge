@@ -1,6 +1,6 @@
 packages <- c("tidyr", "dplyr", "magrittr", "purrr", "ggplot2", "readxl",
                "lubridate", "plyr","sp",
-              "shiny", "shinyjs", "shinyWidgets",
+              "shiny", "shinyjs", "shinyWidgets","bslib",
               "leaflet", "geojsonsf", "sf") 
 invisible(lapply(packages, require, character.only = TRUE ))
 
@@ -49,8 +49,8 @@ pal <- colorNumeric(
 
 # ------------- Set Age Scale ------------- #
 #age_slider_scale <- df_point_csv[["Age"]] %>% unique() %>% sort(decreasing = T)
-age_slider_scale <- seq(from = max(df_point_csv$Age), to = min(df_point_csv$Age)-1, -1)
-
+age_slider_scale <- seq(from = max(df_point_csv$Age)+1, to = min(df_point_csv$Age)-1, -1)
+prev_age <- max(df_point_csv$Age)+1
 
 # ------------- Source modules ------------- #
 #source("modules/map_module.R")
