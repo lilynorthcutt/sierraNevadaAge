@@ -5,7 +5,7 @@
 
   <p align="center">
     Welcome! This collaborative project aims to innovate rock age prediction using machine learning models. 
-    Our goal is to predict unknown rock ages and use these predictions to better understand magma migration patterns 
+    Our goal is to fill in gaps between between known geologic ages to better understand magma migration patterns 
     in the Sierra Nevadas.
 </p>
   
