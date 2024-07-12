@@ -1,5 +1,5 @@
 packages <- c("tidyr", "dplyr", "magrittr", "purrr", "ggplot2", 
-              "lubridate", "plyr","sp",
+              "lubridate", "plyr","sp", "plotly",
               "shiny", "shinyjs", "leaflet", "geojsonsf", "sf") 
 invisible(lapply(packages, require, character.only = TRUE ))
 
@@ -50,7 +50,9 @@ all_polygons <- cretaceousIntrusionsIndividualPolygons %>%
 ### LEAFLET PLOT
 leaflet(df_point_csv) %>% 
   addTiles(group = "street-view") %>% 
-  addProviderTiles(providers$CartoDB.Positron, group = "base-layer") %>%
+  leaflet::addProviderTiles(providers$CartoDB.Positron, group = "base-layer") %>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "world") %>% 
+  addProviderTiles(providers$Esri.WorldTerrain, group = "terrain") %>% 
   setView(lng = -119.7, lat = 37.7, zoom = 8.4) %>% 
   #Add individual polygons
   addPolygons(data = all_polygons,
@@ -92,7 +94,7 @@ leaflet(df_point_csv) %>%
   addGraticule(interval = .5, group = 'Grid: 0.5 degrees') %>% 
   addGraticule(interval = .1, group = 'Grid: 0.1 degrees') %>% 
   # Add in opportunity for making selections in the graph
-  addLayersControl(baseGroups = c("base-layer", "street-view"), 
+  addLayersControl(baseGroups = c("base-layer", "world", "terrain","street-view"), 
                    overlayGroups = c("border", "individual-polygons", "ages",
                                      'Grid: 0.5 degrees', 'Grid: 0.1 degrees'),
                    position = 'topright') %>% 
@@ -101,9 +103,9 @@ leaflet(df_point_csv) %>%
 
 
 
-
-
-
+# Map base options
+# https://leaflet-extras.github.io/leaflet-providers/preview/
+# https://github.com/leaflet-extras/leaflet-providers
 
 
 
