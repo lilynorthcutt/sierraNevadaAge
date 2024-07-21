@@ -16,8 +16,8 @@
 </div>
 
 __Quick Links:__
-* Interactive Shiny Dashboard [link coming soon]
-* [Notebook with Experiement Code](main_experiment.ipynb)
+* [Interactive Shiny Dashboard](https://iawc6a-lily-northcutt.shinyapps.io/geoAges/)
+* [Experiment Code](main_experiment.ipynb)
 
 <!-- About The Project -->
 ## About The Project 
