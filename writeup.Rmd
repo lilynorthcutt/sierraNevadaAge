@@ -1,6 +1,6 @@
 ---
 title: "Geologic Magmatic Migration Exploration Through Age Prediction"
-output: md_document
+output: github_document
 categories: python, GIS, Shiny, EDA, ML
 date: "2024-07-22"
 ---
