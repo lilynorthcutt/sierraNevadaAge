@@ -15,9 +15,12 @@
 
 </div>
 
+>__Note:__ This is an ongoing project! I am currently in the process of predicting unknown ages using the trained models.
+These predictions will then be added to the Shiny app to help researchers understand the overall magamtic flow in the area.
+
 __Quick Links:__
 * [Interactive Shiny Dashboard](https://iawc6a-lily-northcutt.shinyapps.io/geoAges/)
-* [Experiment Code](main_experiment.ipynb)
+* [Code](main_experiment.ipynb)
 
 <!-- About The Project -->
 ## About The Project 
