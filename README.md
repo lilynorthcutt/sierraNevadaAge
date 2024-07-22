@@ -23,7 +23,7 @@ __Quick Links:__
 
 * [Interactive Shiny Dashboard](https://iawc6a-lily-northcutt.shinyapps.io/geoAges/) (uniform grid predictions coming soon!)
 * [Code](main_experiment.ipynb)
-* [Writeup](writeup.md)
+
 
 <!-- About The Project -->
 ## About The Project 
