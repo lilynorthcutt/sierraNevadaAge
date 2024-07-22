@@ -1,0 +1,1095 @@
+---
+title: "Geologic Magmatic Migration Exploration Through Age Prediction"
+output: github_document
+categories: [python, GIS, Shiny, EDA, ML]
+date: "2024-07-22"
+---
+
+
+
+__Access the interactive dashboard of the data and predictions [here](https://iawc6a-lily-northcutt.shinyapps.io/geoAges/) !__
+
+__Access the notebook for the full code and predictions at the [github repository](https://github.com/lilynorthcutt/sierraNevadaAge) !__
+
+### Summary
+
+This project aims to deepen our understanding of magmatic migration within the Sierra Nevadas. The current samples of geologic ages do not provide uniform coverage of the area. This project aims to offer a solution to this problem by exploring the success of various machine learning (ML) algorithms to predict geologic ages within the region.
+
+In this write-up, I will go through my process for:
+
+* Data Ingestion, Cleaning, and Wrangling
+* Exploratory Data Analysis (EDA)
+* Feature Engineering
+* Training Models
+  * Building custom Cross-Validation pipeline 
+  * Fine Tuning Parameters
+* Model Evaluation 
+
+> Please note, this project is ongoing, and ever evolving. Currently (July 22) I am working on using the models to predict unknown points for visualizations in the Shiny App. 
+
+## Introduction
+Magmatism plays a key role in mountain formation, as ascending magmas add mass and volume to the Earth's surface and subsurface. However, the causes and rates of magma movement remain largely unknown, necessitating a deeper understanding of these processes. The mountains and canyons in the Sierra Nevadas are formed from granitic rocks, which originated from molten rock that cooled far beneath the Earth's surface. By examining the geologic ages within this area, we can gain insights into the age of the rocks at various locations and understand the magmatic migration and processes that created them.
+
+The current data in the Sierra Nevadas does not uniformly cover the area, making it unrepresentative of the entire region. This is a common problem in geology, as uniformly collecting samples across a region is often impractical due to constraints such as time, resources, coverage area, or sample accessibility. Therefore, there is a need for novel methods to mitigate sampling bias and use geologic age samples to predict uniform coverage of the area.
+
+__Key Project Goals:__
+
+The key goals this project aims to address are the following:
+
+* __Develop novel machine learning (ML)__ methods to fill gaps in geologic maps by predicting undated rock ages.
+* __Apply the results from the model to predict__ undated rock ages, providing a less biased view of magmatic migration.
+* __Build Interactive Visualizations__ for researchers and curious minds to view and explore the data and predictions.
+
+This project was done with `python` for all data cleaning, model training/evaluation, and predictions, and `R` for interactive visualizations in Shiny. he full code is extensive, so some parts are omitted here for brevity. Please refer to the link at the top to view the notebook with the entire code.
+
+Let's begin!
+
+## Preprocessing
+We have two data types: a csv file, and shapefiles. The csv file contains ages at specific locations, while the shapefiles contain a boundary of interest and polynomials with their geologic period.
+
+### Load Data
+```{python}
+#| include: false
+
+import random
+import pandas as pd
+import numpy as np
+import os
+import utm
+import time
+from os.path import join
+
+import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+from ipywidgets import widgets
+from IPython.display import display
+
+import geopandas as gpd
+from pyhigh import get_elevation_batch
+from shapely.geometry import Point, LineString, Polygon
+from shapely.prepared import prep
+
+
+# Modeling
+from sklearn.model_selection import train_test_split, KFold, GridSearchCV, BaseCrossValidator
+from sklearn.pipeline import Pipeline
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.cluster import KMeans
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.preprocessing import StandardScaler, FunctionTransformer
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.gaussian_process.kernels import RBF, Matern, RationalQuadratic, ExpSineSquared, DotProduct, ConstantKernel as C
+from sklearn.inspection import permutation_importance
+#from pykrige.ok import OrdinaryKriging 
+import pickle
+from prettytable import PrettyTable 
+
+#%%
+random.seed(1)
+```
+
+```{python}
+# Read in CSV file
+csv_file_path = "Data/raw/attia_CentralSierraCretaceousIntrusionsGeochronologyData_forLily12082023.xlsx"
+df_ages_raw = pd.read_excel(csv_file_path, sheet_name =  'CentralSierraNevada Rock Ages')
+
+df_ages_raw.head(5)
+
+```
+
+```{python}
+# Read in Shapefiles
+# Read in shapefiles
+
+def read_shapefiles_in_folder(folder_path):
+    'FUNCTION TO READ IN ALL SHAPEFILES FROM A FOLDERPATH'
+    shapefiles_dict = {}
+
+    # Check if the folder path exists
+    if not os.path.exists(folder_path):
+        raise FileNotFoundError(f"The folder '{folder_path}' does not exist.")
+
+    # Iterate through files in the folder
+    for filename in os.listdir(folder_path):
+        if filename.endswith(".shp"):
+            file_path = os.path.join(folder_path, filename)
+            # Extract file name without extension
+            file_name = os.path.splitext(filename)[0]
+            # Read shapefile into GeoDataFrame
+            gdf = gpd.read_file(file_path)
+            # Store GeoDataFrame in the dictionary
+            shapefiles_dict[file_name] = gdf
+            
+    return shapefiles_dict
+
+folder_path = 'Data/raw/CentralSierraMapData_ForLily20231220'
+
+try:
+    # Read shapefiles into a dictionary
+    shapefiles_data = read_shapefiles_in_folder(folder_path)
+
+    # Access GeoDataFrames by file name
+    for file_name, gdf in shapefiles_data.items():
+        print(f"File Name: {file_name}")
+        #print(gdf.head())  # Display the first few rows of the GeoDataFrame
+
+except FileNotFoundError as e:
+    print(e)
+except Exception as e:
+    print(f"An error occurred: {e}")
+
+
+```
+We are interested in 2 of the shapefiles: 
+
+* DetailedMapDataAreaBoundaryLine: Provides boundary linestring of the area of interest
+* CretaceousIntrusionsIndividualPolygons: Provides polygon geometry with associated geologic time period of the are
+
+### Data Cleaning and Wrangling
+To ensure the data is ready for analysis, we will __handle missing values__, and add geospatial characteristics (POINT() shape). Additionally, lets add some approximate ages to the periods in the shapefiles (late Cretaceous, early Cretaceous, and Jurassic Cretaceous), and then combine the shapefiles with like periods.
+
+```{python}
+# Clean csv
+ 
+# ------ Handle missing values ---------
+# When original name is NA, then originalName == AnalysisName
+df_ages_raw['OriginalName'] = df_ages_raw['OriginalName'].fillna(df_ages_raw['AnalysisName']) 
+# When easting & northing == "NA*" then convert to NA
+df_ages_raw['Easting'] = pd.to_numeric(df_ages_raw['Easting'].replace('NA*', pd.NA), errors = 'coerce') 
+df_ages_raw['Northing'] = pd.to_numeric(df_ages_raw['Northing'].replace('NA*', pd.NA), errors = 'coerce')
+# Remove when location (easting or northing) is NA because location of age is a must have
+df_ages = df_ages_raw[pd.notna(df_ages_raw['Easting']) & pd.notna(df_ages_raw['Northing'])].copy()
+print("Size of cleaned csv data:", len(df_ages))
+
+# ---------- Create POINT dataframe -----------
+# Make points a POINT() geometry
+# EPSG:26711
+df_point = gpd.GeoDataFrame(df_ages, geometry=gpd.points_from_xy(df_ages.Easting, df_ages.Northing),  crs='epsg:26711')
+
+#### Get age statistics
+print(df_ages['Age'].describe())
+
+##### View distrubtion of ages
+plt.hist(df_ages['Age'], bins = 40)
+plt.xlabel("Ages")
+plt.ylabel("Count")
+plt.title("Distribution of Ages over Entire Area")
+plt.figure(figsize=(.5, .5), dpi=80)
+plt.show()
+```
+
+```{python}
+# Clean shapefile
+
+# ------------- Add Numeric Approx Age ---------------
+#shapefiles_data["CretaceousIntrusionsIndividualPolygons"].Age.unique()
+#array(['eK', 'KJ', 'lK', 'eK?', 'lK?'], dtype=object)
+# PERIODS:
+# J: 201.3-145.0 MYA
+# K: 145.0-66.0 MYA
+# Thus mapping eK to mean(145 and mean(145, 66)), lK to mean(mean(145, 66), 66) and KJ to 145
+# Note that the oldest point in df_ages is 124.2
+k_mean = (145+66)/2 ; eK_mean = (145+k_mean)/2; lk_mean = (k_mean+66)/2; kJ = 145;
+(shapefiles_data["CretaceousIntrusionsIndividualPolygons"])["ageNum"] = shapefiles_data["CretaceousIntrusionsIndividualPolygons"].Age.apply(
+    lambda x: eK_mean if (x == 'eK' or x == 'eK?') else(lk_mean if (x == 'lK' or x == 'lK?') else kJ))
+    
+# Number of polygons in each shapefile:
+for file, gdf in shapefiles_data.items():
+    print(f"File: {file}   Number of shapes: {len(gdf)}")
+
+##### View distrubtion of approximate ages
+plt.hist((shapefiles_data["CretaceousIntrusionsIndividualPolygons"])["ageNum"], bins = 40)
+plt.xlabel("Ages")
+plt.ylabel("Count")
+plt.title("Count of Approximate Ages of Polygons")
+plt.figure(figsize=(.5, .5), dpi=80)
+plt.show()
+
+
+```
+
+There are over 1400 shapes in our individual polygon file (with periods), but only 3 periods. For convenience we will combine polygons if they touch and have the same period.
+
+```{python}
+
+# ---------- Combined if polygon touching and same period ----------
+shapefiles_data['UnionPolygons'] = shapefiles_data["CretaceousIntrusionsIndividualPolygons"].dissolve(by = 'Age')
+
+fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(15,10))
+legend_criteria = "ageNum"
+ax[0].set_title(f'Individual Polygons')
+ax[1].set_title(f'Union of Polygons')
+
+shapefiles_data["CretaceousIntrusionsIndividualPolygons"].plot(figsize=(10, 10), alpha=0.5, edgecolor='k',column=legend_criteria, cmap='viridis', legend=False,ax=ax[0] )
+shapefiles_data['UnionPolygons'].plot(figsize=(10, 10), alpha=0.5, edgecolor='k',column=legend_criteria, cmap='viridis', legend=False,ax=ax[1] )
+
+
+plt.show()
+
+```
+
+**_Note 1:_** The union creates 6 shapefiles because some of the periods are more uncertain and have a `?`. For now, we are handling all periods as if they are all accurate.
+
+**_Note 2:_** There are only polynomials within our boundary.
+
+**_Note 3:_** The union creates a shape called a "MULTIPOLINOMIAL" which we can ultimately handle the same as a normal POLYNOMIAL() geometry.
+
+
+### Exploratory Data Analysis
+Now that we have the data, and it is cleaned up, we can start visualizing our data and exploring it. We already see that our individual ages are mostly between 90-98 Million year ago (Ma), with average age of 99 Ma. Additionally, our polygons reference 3 periods. Note that while the above graph counts the number of polygons it doesn't take into account the total area of the polygons. As we will see below the oldest polygons take up a very small amount of the area.
+
+Let's first take a look at our map:
+```{python}
+from branca.colormap import linear
+# In order to color on the same scale we need to normalize ages between the two data sources
+# and create a color scale
+min_age = min(min(df_point["Age"]),min(shapefiles_data["UnionPolygons"]["ageNum"]))
+max_age = max(max(df_point["Age"]),max(shapefiles_data["UnionPolygons"]["ageNum"]))
+colormap = linear.YlOrRd_09.scale(min_age, max_age)
+
+# IDs for each polygon in each shapefile
+(shapefiles_data["DetailedMapDataAreaBoundaryLine"])["id"] = shapefiles_data["DetailedMapDataAreaBoundaryLine"].index.astype(str)
+# IDs for each polygon in each shapefile
+(shapefiles_data["UnionPolygons"])["id"] = shapefiles_data["UnionPolygons"].index.astype(str)
+
+```
+__Interact with me!__
+```{python }
+# | include: false
+import folium
+
+# Initialize map
+interactive_map = folium.Map(
+    location=(37.75, -119.8),
+    zoom_start=9.25,
+    control_scale=True,
+    tiles="Esri.WorldShadedRelief"
+)
+
+# Boundary Layer
+boundary_layer = folium.GeoJson(data=shapefiles_data["DetailedMapDataAreaBoundaryLine"][["geometry", "id"]],
+                               style_function=lambda feature: {
+                                   "color": "black",
+                                   "weight": 5,
+                                   "dashArray": "5, 20"
+                               }).add_to(interactive_map)
+                               
+
+# Create Popup template for locations
+popup_shp = folium.GeoJsonPopup(
+    fields=[ "ageNum"],
+    aliases=["Approx. Age:"],
+    localize=True,
+    labels=True,
+    style="background-color: yellow;",
+)
+
+tooltip_shp = folium.GeoJsonTooltip(
+    fields=[ "ageNum"],
+    aliases=["Approx Age: "],
+    localize=True,
+    sticky=False,
+    labels=True,
+    style="""
+        background-color: #F0EFEF;
+        border: 2px solid black;
+        border-radius: 3px;
+        box-shadow: 3px;
+    """,
+    max_width=800,
+)
+
+# Individual polygon layer
+folium.GeoJson(
+    shapefiles_data["UnionPolygons"],
+    style_function=lambda x: {
+        'fillColor': colormap(x['properties']["ageNum"]),
+        'color': 'Black',
+        'weight': 2,
+        'fillOpacity': 0.7
+    },
+    tooltip=tooltip_shp,
+    popup=popup_shp,
+).add_to(interactive_map)
+
+# Create Popup template for locations
+popup_location = folium.GeoJsonPopup(
+    fields=["Age", 'Easting', 'Northing'],
+    aliases=["Age", 'Easting', 'Northing'],
+    localize=True,
+    labels=True,
+    style="background-color: yellow;",
+)
+
+tooltip_location = folium.GeoJsonTooltip(
+    fields=["Age", 'Easting', 'Northing'],
+    aliases=["Age: ", ' Easting: ', ' Northing: '],
+    localize=True,
+    sticky=False,
+    labels=True,
+    style="""
+        background-color: #F0EFEF;
+        border: 2px solid black;
+        border-radius: 3px;
+        box-shadow: 3px;
+    """,
+    max_width=800,
+)
+
+# Age by location layer
+folium.GeoJson(
+    df_point,
+    name = "Ages at Location",
+    marker=folium.Circle(radius=1500, color = 'Black', fill_opacity = 1, fillColor = 'Black'),
+    style_function=lambda x: {
+        'fillColor': colormap(x['properties']["Age"]), 
+        'color': colormap(x['properties']["Age"]),
+        'radius': 1500
+    },
+    tooltip=tooltip_location,
+    popup=popup_location,
+).add_to(interactive_map)
+
+
+# Add layers to map
+colormap.add_to(interactive_map)
+
+
+```
+```{python}
+# Omitting plotting code here due to size
+interactive_map
+```
+
+Using the interactive `folium` map, we can see that we have some polygons and data for about half of the boundary area.We have points outside of the boundary area, which is great as it gives us more information that will be helpful when making predictions.
+
+Preliminary trends indicate the ages of the samples get younger as we move eastward, This suggests that the general direction of magma movement was towards the east.
+
+Let's add some additional features and see what else we can see.
+
+### Feature Engineering (Part 1)
+
+We will now perform the first set of __feature engineering__ on our data.  This involves converting Easting and Northing coordinates to longitude and latitude for ease of interpretation, and creating quartiles for these coordinates. Additionally, we will incorporate important spatial features such as elevation and the geological period of the polygon each point falls into, with the periods one-hot encoded for scaling prior to model training.
+
+ > __IMPORTANT !!!__ The function `get_elevation_batch()` being used to get the elevation needs to be modified to run. Please go to the Running the Code section of the [README](https://github.com/lilynorthcutt/sierraNevadaAge?tab=readme-ov-file#running-the-code) for more information. 
+
+
+```{python}
+# Feature Engineering - CSV File
+# ---------- Lat/Lng -----------------
+lat, long = utm.to_latlon(df_ages['Easting'], df_ages['Northing'], 11, 'S')
+df_ages['lat'] = lat
+df_ages['long'] = long
+
+####### GEOLOGIC FEATURES #############
+
+# ----------- Elevation ---------------
+# Sending batch is faster than individual (https://github.com/sgherbst/pyhigh#)
+#### NOTE: need to change get_url_for_zip() function in env/lib/python3.9/pyhigh/elevation.py to
+# def get_url_for_zip(zip_name):
+#    return f'https://firmware.ardupilot.org/SRTM/North_America/{zip_name}'
+# Described in issue here https://github.com/sgherbst/pyhigh/issues/1
+coord_batch = list(zip(df_ages['lat'], df_ages['long']))
+df_ages['elevation'] = get_elevation_batch(coord_batch)
+
+# ----------- Add Period of Corresponding Polygon --------------
+# NOTE: This will limit all predictions to within the border if used
+
+# Create POINT() by easting and northing
+geometry = [Point(xy) for xy in zip(df_ages['Easting'], df_ages['Northing'])]
+df_ages = gpd.GeoDataFrame(df_ages, geometry=geometry, crs="EPSG:26711")
+df_ages['period'] = "None"
+# Find if the point is within a polygon, and if so, assign it the corresponding period
+for idx, point in df_ages.iterrows():
+    for period, polygon in shapefiles_data['UnionPolygons'].iterrows():
+        if point.geometry.intersects(polygon.geometry):
+            df_ages.at[idx, 'period'] = period
+            break  # Stop checking once the polygon is found
+            
+# Perform one hot encoding on period 
+df_ages['period_onehot'] = df_ages['period']
+df_ages = pd.get_dummies(df_ages, columns=['period_onehot'])
+            
+
+```
+
+We can look the number of points that fall into each period below (note that one point does into the KJ period, its just hard to see).
+
+```{python}
+# Look at the amount of points at each age in each period
+period = df_ages['period'].unique()
+
+fig, ax = plt.subplots(nrows=1, ncols=len(period), figsize=(15,5))
+plt.setp(ax, xlim=(80,130), ylim=(0, 16) )
+for i, ax in enumerate(ax.flat):
+    df = df_ages[df_ages['period'] == period[i]]
+    
+    ax.hist(df['Age'], bins=10, alpha=0.7, stacked=False)
+    ax.set_xlabel('Age (Ma)')
+    ax.set_ylabel('Count')
+    ax.set_title(f'Period: {period[i]}')
+    ax.grid(True)
+
+```
+ 
+As we saw in the folium map, a lot of points are outside of the boundary region and do not fall into a polygon (i.e. `period == "None"`). But there are a decent amount of points in the eK and lK periods (only 1 in KJ).
+
+Next we can look at how the location features (Easting, Northing, and Elevation) relate to age.
+
+```{python}
+# Plot all features with age individually
+list_to_plot = ["Easting", "Northing", "elevation"]
+fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15,5))
+
+for i, ax in enumerate(ax.flat):
+    ax.scatter(df_ages[list_to_plot[i]], df_ages["Age"], alpha=0.7, color='blue')
+    ax.set_xlabel(f'{list_to_plot[i]}')
+    ax.set_ylabel('Age (Ma)')
+```
+
+
+```{python}
+# Plot all features together in 3D
+fig = px.scatter_3d(df_ages, x='Easting', y='Northing', z='elevation', color='Age',
+                    title = "Age Distribution with Elevation (interact with me!)")
+fig.update_layout(scene_zaxis_type="log")
+```
+
+
+From the graphs of relating easting, northing, and elevation to age we see that easting and elevation are showing a stronger trend with age than northing.
+
+### Test/Train Split
+
+Before training ML models, the data must be split into test and training sets. This is my first time working with GIS data and I was excited to learn about 
+various test/train split methods when handling this sort of data. In addition to the traditional split, I tried out a Spatial KFold CV method, and a Cluster-Based Split method. 
+
+
+```{python}
+# Split data into test and train 
+
+# ----------- Traditional Split -----------------
+# Use if spatial autocorrelation is not significant concern
+train_trad, test_trad = train_test_split(df_ages, test_size=0.2, random_state=42)
+
+# ----------- Spatial K-Fold CV -----------------
+# Ensures spatially close points are either in training or testing (not both)
+coordinates = df_ages[['lat', 'long']].values
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+for train_index, test_index in kf.split(coordinates):
+        train_kf, test_kf = df_ages.iloc[train_index], df_ages.iloc[test_index]
+
+# ----------- Cluster-Based Split ---------------
+# Cluster data points and then split each cluster into test/train
+kmeans = KMeans(n_clusters=10, random_state=42)
+df_ages['cluster'] = kmeans.fit_predict(df_ages[['lat', 'long']])
+
+train_clust, test_clust = train_test_split(df_ages, test_size=0.2, stratify=df_ages['cluster'], random_state=42)
+
+################################################################################
+# Let's create a dictionary with the different test/train splits for convenience!
+df_dict = {
+    'trad': {'train': train_trad,'test': test_trad},
+    'kf': {'train': train_kf,'test': test_kf},
+    'cluster': {'train': train_clust,'test': test_clust}
+}
+
+```
+
+
+The difference in how the test train splitting methods split the data with respect to location:
+
+```{python}
+# | include: false
+splits = [
+    {'name': 'Traditional','train': train_trad, 'test': test_trad},
+    {"name": "Spatial K-Fold",'train': train_kf, 'test': test_kf},
+    {"name":"Cluster-Based", 'train': train_clust, 'test': test_clust}
+]
+
+# View difference in test/train split for each method
+fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15,5))
+for i, ax in enumerate(ax.flat):
+    name = splits[i]['name']
+    train_df = splits[i]['train']
+    test_df = splits[i]['test']
+    
+    ax.scatter(train_df['long'], train_df['lat'], color='black', label='Train Data', alpha=0.7)
+    ax.scatter(test_df['long'], test_df['lat'], color='red', label='Test Data', alpha=0.7)
+    ax.set_xlabel('Longitude')
+    ax.set_ylabel('Latitude')
+    ax.set_title(f' {name} Splits')
+    ax.grid(True)
+    ax.legend()
+    
+```
+
+
+The difference in how the test train splitting methods split the data with respect to capturing age:
+
+```{python}
+# | echo: false
+# View distribution of ages in test/train partitions for each method
+fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15,5))
+for i, ax in enumerate(ax.flat):
+    name = splits[i]['name']
+    train_df = splits[i]['train']
+    test_df = splits[i]['test']
+    
+    ax.hist([train_df['Age'], test_df['Age']], bins=10, color=['black', 'red'], label=['Train Data', 'Test Data'], alpha=0.7, stacked=True)
+    ax.set_xlabel('Age (Ma)')
+    ax.set_ylabel('Count')
+    ax.set_title(f'{name} Splits')
+    ax.grid(True)
+
+```
+
+
+```{python }
+# | echo: false
+#
+plt.hist([test_trad['Age'], test_kf['Age'], test_clust['Age']], bins=10, color=['#00BE67', '#FF68A1', '#00A9FF'], label=['Traditional Split', 'Spatial K-Fold Split', 'Cluster-Based Split'], alpha=0.7, stacked=False)
+plt.xlabel('Age (Ma)')
+plt.ylabel('Count')
+plt.title(f'Age Count in Test for each Split Method')
+plt.grid(True)
+plt.legend( title='Test Age Count', loc='upper right')
+
+plt.show()
+```
+
+
+Ultimately, I found that these advanced splitting methods did not significantly change the spatial representation or age distribution of my data compared to the traditional split. Additionally, I was concerned that these methods might not accurately represent my data for future predictions and could potentially lead to an overestimation of model accuracy by reducing the randomness in the splitting process. As a result, I will train the models with the traditionally split data.
+
+As I learn more about ML with GIS data, I may revisit this. Please reach out if you have tips/advice!
+
+### Cross Validation 
+To ensure robust model evaluation for hyper-parameter tuning, I perform 5-fold cross-validation on my training set and store the results in a dictionary. I prefer using a dictionary for this purpose as it keeps everything organized and easily accessible!
+
+
+```{python}
+# Setting up k-fold cross-validation, and storing split in dictionary for easy access
+kf = KFold(n_splits=5) #5-folds
+for key in df_dict.keys():
+    # Take training data set for test/train split method(traditional, cluster, kfold)
+    train = df_dict[key]['train']
+    
+    # Split data into the 5 folds from TRAIN
+    # Store in a dictionary (cv) with all test and train splits
+    cv = {}
+    for i, (train_index, test_index) in enumerate(kf.split(train)):
+        cv[f'fold_{i}'] = {
+        'train': train.iloc[train_index],
+        'test': train.iloc[test_index],
+        'train_idx': train_index,
+        'test_idx': test_index
+    }
+    # Add the cv dictionary to the original df_dict dictionary with all of the test/train splits
+    df_dict[key]['cv'] = cv
+    
+```
+
+#### Second Round of Feature Engineering
+Within the cross-validation sets, I perform a second round of feature engineering to prevent data leakage and preserve the integrity of the model's predictions. It's crucial to avoid allowing the models to see the testing data, even within cross-validation folds.
+
+__Why not let `GridSearchCV()` split the data into k-folds?__
+
+While it might seem convenient to let `GridSearchCV` handle data splitting later on, there's an important reason for my approach. We already have some good features, but it's vital to provide the data with additional context about its surroundings. Specifically, for a given point `o_0`, I calculate the age, distance, and angle of the next closest points: `o_1`, `o_2`, and `o_3.` This is done in two dimensions (combining Easting and Northing) and individually for Easting, Northing, and Elevation in one dimension.
+
+__Preventing Leakage and Overfitting__
+
+A major concern in this process is data leakage, which occurs when the training data gets insights from the testing data, potentially leading to overfitting. To prevent this, we add these features only after all splitting has been completed:
+
+* Training Data: The training data will have age/distance/bearing labels based on the training data itself.
+* Test Data: Both the hold-out and cross-validation test sets will have age/distance/bearing labels based on the training data only.
+
+__Using `GridSearchCV()` for Hyper-Parameter Tuning__
+For hyper-parameter tuning of most models, I use `GridSearchCV()`. To integrate the custom feature engineering steps, I define a custom cross-validation (CV) class that uses the predefined CV indices along with the training set. This class adds the new features to the training and testing folds separately before training the models.
+
+__Note 2:__ For the functions used in feature engineering, please refer to the full code provided at the link above.
+
+```{python}
+# | include: false
+def calculate_bearing(point1, point2):
+    lat1 = np.radians(point1.y)
+    lon1 = np.radians(point1.x)
+    lat2 = np.radians(point2.y)
+    lon2 = np.radians(point2.x)
+    dlon = lon2 - lon1
+    x = np.sin(dlon) * np.cos(lat2)
+    y = np.cos(lat1) * np.sin(lat2) - (np.sin(lat1) * np.cos(lat2) * np.cos(dlon))
+    initial_bearing = np.arctan2(x, y)
+    initial_bearing = np.degrees(initial_bearing)
+    compass_bearing = (initial_bearing + 360) % 360
+    
+    return compass_bearing
+  
+def get_closest_points_metrics(selected_point, reference_df, num_closest=3, training_point = True):
+    '''
+    Function to calculate the closest points metrics in 1D, 2D and 3D, and assigning the ages, distances, and directions
+    to the num_closest points
+    :param selected_point: geopandas df with 1 row, where selected_point is the point from which we want to find the closest points
+    :param reference_df: this is the reference of the points we are looking at and comparing selected_point to
+    :param num_closest: the top number of closest points we care about
+    :param training_point: boolean to indicate if we are looking at training points or not, i.e. if selected_point came from reference_df
+    :return: Returns a pd.series equal to selected_point with the addition of the num_closest points age,direction, and bearing in 1D and 2D
+    '''
+    
+    # If we are labeling the training set, then selected_point will be in points_gdf, so we want to remove it
+    if training_point:
+        remaining_points_gdf = reference_df.drop(index=selected_point.name)
+    else:
+        remaining_points_gdf = reference_df
+     
+    # Calculate and save the ages, distances, and bearing of num_closest points closest to selected_point
+    # for each dimension (easting, northing, elevation) and for 2dimension top down view (easting and northing combined
+    metrics = {}
+    ##################
+    #### 1 Dimension
+    dims = ['Northing', 'Easting', 'elevation']
+    
+    for dim in dims:
+        # Calculate distances
+        remaining_points_gdf[f'distance_1d_{dim.lower()}'] = remaining_points_gdf.apply(lambda row: 
+                                                    abs(row[dim] - selected_point[dim]), axis = 1)
+        # Calculate bearings (its 1D so im just doing: -1,0,1)
+        remaining_points_gdf[f'bearing_1d_{dim.lower()}'] = remaining_points_gdf.apply(lambda row: 0 if row[f'distance_1d_{dim.lower()}'] == 0 else
+                                                   (row[dim] - selected_point[dim])/abs(row[dim] - selected_point[dim]), axis = 1)
+        # sort the data based on distance
+        sorted_points_gdf = remaining_points_gdf.sort_values(by=f'distance_1d_{dim.lower()}').head(num_closest)
+        # Assign points to the metric dictionary
+        for i, (_, row) in enumerate(sorted_points_gdf.iterrows(), start=1):
+            metrics[f'age_1d_{dim.lower()}_{i}'] = row['Age']
+            metrics[f'distance_1d_{dim.lower()}_{i}'] = row[f'distance_1d_{dim.lower()}']
+            metrics[f'bearing_1d_{dim.lower()}_{i}'] = row[f'bearing_1d_{dim.lower()}']
+
+    
+    ###################
+    #### 2 Dimension
+    remaining_points_gdf['distance_2d'] = remaining_points_gdf.geometry.distance(selected_point.geometry)
+    remaining_points_gdf['bearing_2d'] = remaining_points_gdf.geometry.apply(lambda x: calculate_bearing(selected_point.geometry, x))
+    
+    sorted_points_gdf = remaining_points_gdf.sort_values(by='distance_2d').head(num_closest)
+    
+    for i, (_, row) in enumerate(sorted_points_gdf.iterrows(), start=1):
+        metrics[f'age_2d_{i}'] = row['Age']
+        metrics[f'distance_2d_{i}'] = row['distance_2d']
+        metrics[f'bearing_2d_{i}'] = row['bearing_2d']
+    
+    
+    return pd.Series(metrics)
+
+```
+
+```{python}
+# Post Split Feature Engineering - Only using training data as reference
+
+# <--------- Closest n Ages + Direction + Bearing ------------->
+# We will calculate age of the closest 3 points in for each direction individually (northing/easting/elevation),
+# and top-down in 2 dimensions (easting+northing): Adding age, direction and bearing for each
+
+start = time.time()
+
+# For each method of splitting, for each cross-validation training set calculate the above
+for key in df_dict.keys():
+    ### Full Testing ###
+    df = df_dict[key]['test']
+    ref = df_dict[key]['train']
+    df = df.apply(lambda row: pd.concat([row, get_closest_points_metrics(
+      selected_point=row, reference_df= ref,  training_point=False)]), axis=1)
+    df_dict[key]['test'] = df
+    
+    for fold in df_dict[key]['cv']:
+        ### K-Fold Training ###
+        # Assign the data we want to make calculations on 
+        df = df_dict[key]['cv'][fold]['train']
+        # Call function on each row
+        # NOTE: Because we are labeling training data with training data we need to specify this to the function
+        # so that it can remove this point from the reference dataset
+        # (this is needed because when we label the test data we use training data as the reference and won't be removing the point
+        df = df.apply(lambda row: pd.concat([row, get_closest_points_metrics(
+          selected_point=row, reference_df= df, training_point=True)]), axis=1)
+        df_dict[key]['cv'][fold]['train'] = df
+        
+        ### K-Fold Testing ###
+        # Assign the data we want to make calculations on 
+        df = df_dict[key]['cv'][fold]['test']
+        # Ref is training set (same as before)
+        # Training_point = False this time
+        df = df.apply(lambda row: pd.concat([row, get_closest_points_metrics(
+          selected_point=row, reference_df= ref, training_point=False)]), axis=1)
+        df_dict[key]['cv'][fold]['test'] = df
+
+
+end = time.time()
+print('Time taken to calculate metrics: ' + str(end - start) + " seconds")
+```
+
+```{python}
+class CustomCVSplitter(BaseCrossValidator):
+    
+    def __init__(self, cv_indices, feature_list):
+        self.cv_indices = cv_indices
+        self.feature_list = feature_list
+        
+    def split(self, X, y=None, groups=None):
+        # Define the folds from the indices given
+        for fold, (train_idx, test_idx) in enumerate(self.cv_indices):
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+
+            # Apply feature engineering 
+            X_train = X_train.apply(lambda row: pd.concat([row, get_closest_points_metrics(
+              selected_point=row, reference_df= X_train,  training_point=True)]), axis=1)
+            X_test = X_test.apply(lambda row: pd.concat([row, get_closest_points_metrics(
+              selected_point=row, reference_df= X_train, training_point=False)]), axis=1)
+        
+            # Remove Age from all X (age is target)
+            X_train = X_train[self.feature_list]
+            X_test = X_test[self.feature_list]
+
+            yield train_idx, test_idx
+            
+        
+        
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return len(self.cv_indices)
+    
+    def __len__(self):
+        return self.get_n_splits()
+    
+```
+
+```{python}
+# | include: false
+def problem_columns(x):
+    return x.drop(columns=['Age', 'geometry'], errors='ignore')
+
+```
+
+## Training Models
+
+In this section, I will walk through the training process for two out of the five models I've trained on this data: a K-Nearest Neighbor (KNN) model and a Gradient Boosting Machine (GBM) model. For the KNN model, we will manually tune the parameters and select the best one. For the GBM model, we will demonstrate how to use the custom cross-validation and pipeline functionality with `GridSearchCV()`.
+
+The full list of models trained in this project includes:
+
+* Decision Tree
+* Random Forest
+* Gradient Boosting Machine (GBM)
+* K-Nearest Neighbor (KNN)
+* Gaussian Process Regressor
+The full code, including training for all models, is available at the link provided at the top. 
+
+Let's get started!
+
+Before diving into the specific models, let's define and initialize a few key components to ensure the training process runs smoothly.
+
+```{python}
+# For now I'm just training on the traditionally split test/train data - and will repeat on the other splits at a later time
+df_test_train = df_dict['trad']
+
+# Set list of features and target
+target = list(["Age"])
+list_features = list(['Easting', 'Northing', 'elevation', 'period_onehot_KJ', 'period_onehot_None', 'period_onehot_eK', 'period_onehot_lK', 
+                      'age_1d_northing_1', 'distance_1d_northing_1', 'bearing_1d_northing_1',
+                      'age_1d_northing_2', 'distance_1d_northing_2', 'bearing_1d_northing_2',
+                       'age_1d_northing_3', 'distance_1d_northing_3', 'bearing_1d_northing_3',
+                       'age_1d_easting_1', 'distance_1d_easting_1', 'bearing_1d_easting_1',
+                       'age_1d_easting_2', 'distance_1d_easting_2', 'bearing_1d_easting_2',
+                       'age_1d_easting_3', 'distance_1d_easting_3', 'bearing_1d_easting_3',
+                       'age_1d_elevation_1', 'distance_1d_elevation_1',
+                       'bearing_1d_elevation_1', 'age_1d_elevation_2',
+                       'distance_1d_elevation_2', 'bearing_1d_elevation_2',
+                       'age_1d_elevation_3', 'distance_1d_elevation_3',
+                       'bearing_1d_elevation_3', 'age_2d_1', 'distance_2d_1', 'bearing_2d_1',
+                       'age_2d_2', 'distance_2d_2', 'bearing_2d_2', 'age_2d_3',
+                       'distance_2d_3', 'bearing_2d_3'])
+# Why do we include age? because we need it in order to add features within our custom_cv - we will remove age though so that it is not in our training set
+list_features_pre_split = list(['Age','geometry','Easting', 'Northing', 'elevation', 'period_onehot_KJ', 'period_onehot_None', 'period_onehot_eK', 'period_onehot_lK'])
+
+# Set iterable yielding (train, test) splits as arrays of indices for GridSearchCV()
+df_test_train['cv'].keys()
+cv_idx_split = list([])
+
+for key in df_test_train['cv'].keys():
+    train_list = df_test_train['cv'][key]['train_idx'].tolist()
+    test_list = df_test_train['cv'][key]['test_idx'].tolist()
+    cv_idx_split.append((train_list, test_list))
+    
+    
+# Initialize a custom_cv
+custom_cv = CustomCVSplitter(cv_idx_split, list_features)
+    
+# Initialize model metrics
+df_test_train['model_metrics'] = {}
+```
+
+
+
+
+### K-Nearest Neighbors
+
+The k-nearest neighbors (KNN) algorithm is a versatile non-parametric supervised learning method that makes predictions based on the k nearest points to a given data point. The challenge lies in determining the optimal number of nearest points (`k`) to use. To start, we will try `k` values ranging from 1 to 20 and evaluate the average RMSE (Root Mean Squared Error) across the cross-validation folds for each `k.`
+
+```{python}
+# ----------- Hyper-Parameter Tuning -------------
+max_k = 20
+
+# On each fold:
+#   => On each k (num neighbors):
+#       => train model 
+#       => predict age in each test set with model (to make easier, make new dict {k: []} | for all k}
+fold_dict = {k: {"train": [], "test": []} for k in range(1, max_k+1)}
+for k in range (1, max_k+1):
+    # Set k
+    knn = KNeighborsRegressor(n_neighbors=k)
+    
+    # Train for each fold
+    for fold in df_test_train['cv'].keys():
+        # Set test and train x and y 
+        X_train = df_test_train['cv'][fold]['train'][list_features]
+        y_train = df_test_train['cv'][fold]['train'][target]
+        X_test = df_test_train['cv'][fold]['test'][list_features]
+        y_test = df_test_train['cv'][fold]['test'][target]
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_test = scaler.transform(X_test)
+        
+        # Train knn model 
+        knn.fit(X_train, y_train) 
+        
+        # Predict test
+        pred_test = knn.predict(X_test)
+        pred_train = knn.predict(X_train)
+        
+        # Calculate RMSE
+        rmse_test = np.sqrt(mean_squared_error(y_test, pred_test))
+        rmse_train = np.sqrt(mean_squared_error(y_train, pred_train))
+        fold_dict[k]['test'].append(rmse_test)
+        fold_dict[k]['train'].append(rmse_train)
+
+
+```
+
+Let's plot the RMSE values for different `k` neighbors and choose the best `k` based on the "elbow" of the test RMSE curve. From the graph below, it appears that the optimal `k` is 4.
+```{python}
+# ---------------- Select Model ------------------
+test = list([])
+train = list([])
+for k in fold_dict.keys():
+   train.append(np.mean(fold_dict[k]['train'])) 
+   test.append(np.mean(fold_dict[k]['test']))
+   
+plt.plot(train, c='b', label='train')
+plt.plot(test, c='r', label='test')
+plt.legend()
+plt.title("KNN: Average RMSE over 5-folds")
+plt.xlabel("k Neighbors")
+plt.ylabel("RMSE")
+plt.show()
+# We want to select k where the "elbow" in the below graph appears.
+# It looks like this is when k = 4
+k_bestmodel = 4
+
+```
+
+With the optimal `k` determined, we can now train the KNN model on the entire training set using `k=4`. 
+
+It's important to add the closest point metric features to the training set at this stage. The reason for this is that, unlike the other models which will use the training set in `GridSearchCV` for parameter tuning, we are manually tuning the KNN model. If we had added these features earlier, it would have introduced information about the test set into the training set, leading to data leakage when we use `GridSearchCV`.
+
+
+```{python}
+# ------- Train Model on all Training Data -------
+# Now that we chose our parameter as 5, we will train and test on the full training and test set
+knn = KNeighborsRegressor(n_neighbors=k_bestmodel)
+# Set test and train x and y 
+X_train = df_test_train['train'].apply(lambda row: pd.concat([row, get_closest_points_metrics(selected_point=row, reference_df= df_test_train['train'], num_closest=3, training_point=True)]), axis=1)
+X_train = X_train[list_features]
+y_train = df_test_train['train'][target]
+X_test = df_test_train['test'][list_features]
+y_test = df_test_train['test'][target]
+        
+# Scale features
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+        
+# Train knn model 
+knn.fit(X_train, y_train) 
+        
+# Predict test
+pred_test = knn.predict(X_test)
+pred_train = knn.predict(X_train)
+        
+# Calculate RMSE
+rmse_test = np.sqrt(mean_squared_error(y_test, pred_test))
+# Calculate r2
+r2_test = r2_score(y_test, pred_test)
+print("R2: "+ str(r2_test))
+
+#### Add metrics to dictionary
+df_test_train['model_metrics']['knn'] = {'model':knn, 'name': "knn",'rmse': rmse_test, 'r2': r2_test,'predicted_test': pred_test}
+
+
+#### Plot 
+plt.scatter(y_test, pred_test, color='b')
+plt.plot(y_test, y_test, color = 'black')
+plt.title("KNN: Test Age vs. Predicted Test Age")
+plt.xlabel("Age (Ma)")
+plt.ylabel("Predicted Age (Ma)")    
+
+plt.show()
+```
+
+
+
+### Gradient Boosting Machine
+
+For the GBM model, we will use `GridSearchCV` combination with the custom cross-validation class defined earlier and pipeline defined below   In our parameter grid, each parameter name must be prefixed with `model__` to ensure that `GridSearchCV` correctly applies the parameters to the appropriate part of the pipeline. This setup allows us to systematically search for the best parameters while leveraging the benefits of cross-validation.
+
+```{python}
+# Train model on all folds (indices for our cv already specified in grid_search)
+X_train = df_test_train['train'][list_features_pre_split]
+y_train = df_test_train['train'][target]
+X_test = df_test_train['test'][list_features]
+y_test = df_test_train['test'][target]
+
+
+# ----------- Hyper-Parameter Tuning -------------
+param_grid = {
+    'model__n_estimators': [50, 100, 200],
+    'model__max_depth': [3, 5, 7],
+    'model__min_samples_split':[2,4,6,8,10,20,40,60,100], 
+    'model__min_samples_leaf':[1,3,5,7,9]
+}
+
+pipeline = Pipeline([
+    ('remove_columns', FunctionTransformer(problem_columns)),
+    ('model', GradientBoostingRegressor())
+])
+
+model = 'gradient_boosting_regressor'
+
+grid_search = GridSearchCV(pipeline, param_grid, cv=custom_cv, scoring='neg_mean_squared_error', n_jobs=-1,
+                           error_score='raise').fit(X_train, y_train.values.ravel())
+
+grid_search
+
+```
+
+
+Now we can select the best parameters below:
+
+
+```{python}
+# ---------------- Select Model ------------------
+best_params = grid_search.best_params_
+print(best_params)
+```
+
+
+With the best parameters identified, we can retrain the GBM model on the full training set using these parameters. Finally, we will make predictions on the test set and evaluate the model’s performance.
+
+
+```{python}
+# ------- Train Model on all Training Data -------
+# Add features to full training set:
+X_train = X_train.apply(lambda row: pd.concat([row, get_closest_points_metrics(selected_point=row, reference_df= X_train, 
+                                                                             num_closest=3, training_point=True)]), axis=1)
+X_train = X_train[list_features]
+
+# Fit rf with the full training dataset
+best_pipeline = Pipeline([
+    ('remove_columns', FunctionTransformer(problem_columns)),
+    ('model', GradientBoostingRegressor(**{k.replace('model__', ''): v for k, v in best_params.items()}))
+])
+best_pipeline.fit(X_train, y_train.values.ravel())
+
+# Predict test
+pred_test = best_pipeline[1].predict(X_test)
+
+# Calculate RMSE
+rmse_test = np.sqrt(mean_squared_error(y_test, pred_test))
+# Calculate r2
+r2_test = r2_score(y_test, pred_test)
+print("R2: "+ str(r2_test))
+
+
+
+#### Add metrics to dictionary
+df_test_train['model_metrics']['gbm'] = {'model':best_pipeline[1], 'name': model,'rmse': rmse_test, 'r2': r2_test,'predicted_test': pred_test}
+
+
+#### Plot 
+plt.scatter(y_test, pred_test, color='b')
+plt.plot(y_test, y_test, color = 'black')
+plt.title("GBM: Test Age vs. Predicted Test Age")
+plt.xlabel("Age (Ma)")
+plt.ylabel("Predicted Age (Ma)")    
+
+plt.show()
+
+```
+
+## Evaluate
+After training all our models, we can assess their performance using metrics such as RMSE (Root Mean Squared Error) and R^2. The following table summarizes these metrics for each model:
+
+```{python}
+# | echo: false
+evalTable = PrettyTable(["Model", "RMSE", "R2"])
+
+evalTable.add_row(["Decision Tree", 6.78, 0.57])
+evalTable.add_row(["Random Forest", 5.82, 0.68])
+evalTable.add_row(["GBM", 5.26, 0.74])
+evalTable.add_row(["KNN", 5.38, 0.73])
+evalTable.add_row(["Gaussian Process Regressor", 4.55, 0.81])
+
+print(evalTable)
+```
+
+From the table, we can see that the Gaussian Process Regressor is the best-performing model, with an __R2 score of 0.81__. This indicates that the Gaussian Process Regressor explains a significant portion of the variance in the data.
+
+To gain further insights into the models, we can explore feature importance. For models like Decision Trees, Random Forests, and Gradient Boosting Machines (GBM), we can use built-in methods to obtain feature importance scores. Otherwise, we use permutation importance to assess the impact of each feature on model performance. I won't be addressing this here as I only trained two of the models in this writeup.
+
+For practical applications, including integration into the Shiny app, we will retrain the selected model (Gaussian Process Regressor with the best parameters) using all available data. This final model will be used for predicting and forecasting unknown data points.
+
+
+## Conclusion
+This project successfully developed and applied new machine learning (ML) methods to address critical gaps in geologic maps by predicting undated rock ages within the Sierra Nevadas. By leveraging advanced algorithms, including Decision Trees, Random Forests, Gradient Boosting Machines, K-Nearest Neighbors, and Gaussian Process Regressors, we have provided valuable insights into magmatic migration and rock formation processes. The Gaussian Process Regressor emerged as the top performer, offering a robust model with an R2 score of 0.81.
+
+This approach allows us to present a less biased view of magmatic migration, enhancing our understanding of the geological history in the Sierra Nevadas.
+
+Additionally, the interactive visualizations in Shiny enable researchers and interested individuals to explore the data and predictions (predictions coming soon). These visualizations offer an intuitive and engaging way to examine geologic ages, model predictions, and spatial relationships, making the data more accessible and informative.
+
+## Future Work
+
+This was my first project working with GIS data, and I have lots of ideas for additionally avenues I would like to explore. Here are a few ideas:
+
+__Enhanced ML Methods:__
+
+* Investigate more sophisticated ML models, including deep learning techniques and geo neural networks to improve accuracy and robustness
+* Further optimization of model parameters through methods such as Bayesian optimization 
+  
+__Broadening Application Results:__
+
+* Finding other use case areas to apply the methodology explored here, and compare results to see if the modeling can be applied universally or only at this location
+  
+__Improving Shiny Visualizations:__
+
+* Add Models:Add grid of boundary area predicted by models to show ages predicted uniformly over the area
+* Age Histogram: Add histogram of ages corresponding to the ages in the map (i.e. lines up with the Age sliderbar)
+* Custom Line Predictions: Add functionality for users to select a model, and select a line on the map. The app will then generate predictions of ages along the line and output a 2D graph of _line_ vs. age.
+  
+  
+Thank you for stopping by and reading through my work! 
+
+Please feel free to reach out with any comments or suggestions.
+
+
+
+
+.

@@ -867,7 +867,7 @@ for k in range (1, max_k+1):
 
 ```
 
-Let's plot the RMSE values for different `k` neighbors and choose the best `k` based on the "elbow" of the test RMSE curve. From the graph below, it appears that the optimal `k` is 5.
+Let's plot the RMSE values for different `k` neighbors and choose the best `k` based on the "elbow" of the test RMSE curve. From the graph below, it appears that the optimal `k` is 4.
 ```{python}
 # ---------------- Select Model ------------------
 test = list([])
@@ -884,12 +884,12 @@ plt.xlabel("k Neighbors")
 plt.ylabel("RMSE")
 plt.show()
 # We want to select k where the "elbow" in the below graph appears.
-# It looks like this is when k = 5
-k_bestmodel = 5
+# It looks like this is when k = 4
+k_bestmodel = 4
 
 ```
 
-With the optimal `k` determined, we can now train the KNN model on the entire training set using `k=5`. 
+With the optimal `k` determined, we can now train the KNN model on the entire training set using `k=4`. 
 
 It's important to add the closest point metric features to the training set at this stage. The reason for this is that, unlike the other models which will use the training set in `GridSearchCV` for parameter tuning, we are manually tuning the KNN model. If we had added these features earlier, it would have introduced information about the test set into the training set, leading to data leakage when we use `GridSearchCV`.
 
