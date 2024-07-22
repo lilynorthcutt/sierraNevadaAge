@@ -16,7 +16,7 @@ page_sidebar(
       ),
       #------------ Accordion: Model Options ----------------#
       accordion_panel(
-        "Model Options",
+        "Model Options (COMING SOON!)",
         pickerInput("model", "Predict unknown ages:",
                     choices = model_names,
                     selected = NULL,
