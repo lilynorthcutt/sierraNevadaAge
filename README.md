@@ -23,6 +23,7 @@ __Quick Links:__
 
 * [Interactive Shiny Dashboard](https://iawc6a-lily-northcutt.shinyapps.io/geoAges/) (uniform grid predictions coming soon!)
 * [Code](main_experiment.ipynb)
+* [Writeup](https://lilynorthcutt.github.io/portfolio/portfolio/projects/sierraNevadaAge/writeup.html)
 
 
 <!-- About The Project -->
